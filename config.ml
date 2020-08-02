@@ -18,9 +18,17 @@ let authenticator =
   let doc = Key.Arg.info ~doc:"Authenticator." ["authenticator"] in
   Key.(create "authenticator" Arg.(opt string "" doc))
 
-let awa_pin = "git+https://github.com/hannesm/awa-ssh.git#future"
-and git_pin = "git+https://github.com/hannesm/ocaml-git.git#awa-future"
-and conduit_pin = "git+https://github.com/hannesm/ocaml-conduit.git#awa-future"
+let monitor =
+  let doc = Key.Arg.info ~doc:"monitor host IP" ["monitor"] in
+  Key.(create "monitor" Arg.(opt ipv4_address Ipaddr.V4.unspecified doc))
+
+let syslog =
+  let doc = Key.Arg.info ~doc:"syslog host IP" ["syslog"] in
+  Key.(create "syslog" Arg.(opt ipv4_address Ipaddr.V4.unspecified doc))
+
+let name =
+  let doc = Key.Arg.info ~doc:"Name of the unikernel" ["name"] in
+  Key.(create "name" Arg.(opt string "ns.nqsb.io" doc))
 
 let dns_handler =
   let packages = [
@@ -29,23 +37,24 @@ let dns_handler =
     package "dns-tsig";
     package ~min:"2.0.0" "irmin-mirage";
     package ~min:"2.0.0" "irmin-mirage-git";
-    package ~pin:awa_pin "awa";
-    package ~pin:awa_pin "awa-mirage";
-    package ~pin:conduit_pin "conduit";
-    package ~pin:conduit_pin "conduit-lwt";
-    package ~pin:conduit_pin "conduit-mirage";
-    package ~pin:git_pin "git";
-    package ~pin:git_pin "git-http";
-    package ~pin:git_pin "git-mirage";
+    package ~min:"2.2.98" "conduit-mirage";
+    package ~min:"2.98.0" "git-mirage";
+    package "monitoring-experiments";
+    package ~sublibs:["mirage"] "logs-syslog";
   ] in
   foreign
-    ~keys:[Key.abstract remote_k ; Key.abstract axfr ; Key.abstract seed ; Key.abstract authenticator]
+    ~keys:[
+      Key.abstract remote_k ; Key.abstract axfr ; Key.abstract seed ; Key.abstract authenticator ;
+      Key.abstract name ; Key.abstract monitor ; Key.abstract syslog
+    ]
     ~packages
     "Unikernel.Main"
-    (random @-> pclock @-> mclock @-> time @-> stackv4 @-> resolver @-> conduit @-> job)
+    (console @-> random @-> pclock @-> mclock @-> time @-> stackv4 @-> resolver @-> conduit @-> stackv4 @-> job)
+
+let management_stack = generic_stackv4 ~group:"management" (netif ~group:"management" "management")
 
 let () =
   let net = generic_stackv4 default_network in
   register "primary-git"
-    [dns_handler $ default_random $ default_posix_clock $ default_monotonic_clock $
-     default_time $ net $ resolver_dns net $ conduit_direct ~tls:true net]
+    [dns_handler $ default_console $ default_random $ default_posix_clock $ default_monotonic_clock $
+     default_time $ net $ resolver_dns net $ conduit_direct ~tls:true net $ management_stack]
