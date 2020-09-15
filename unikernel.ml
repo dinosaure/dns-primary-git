@@ -4,15 +4,19 @@
 
 open Lwt.Infix
 
-module Main (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Mirage_stack.V4) (RES: Resolver_lwt.S) (CON: Conduit_mirage.S) = struct
+module Main (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Mirage_stack.V4) = struct
 
   module Store = Irmin_mirage_git.Mem.KV(Irmin.Contents.String)
   module Sync = Irmin.Sync(Store)
+  module TCP = Conduit_mirage_tcp.Make(S)
+  module SSH = Awa_conduit.Make(Lwt)(Conduit_mirage)(M)
 
-  let connect_store resolver conduit =
+  let ssh_protocol = SSH.protocol_with_ssh TCP.protocol
+
+  let connect_store ~resolvers =
     let config = Irmin_mem.config () in
     Store.Repo.v config >>= Store.master >|= fun repo ->
-    repo, Store.remote ~conduit ~resolver (Key_gen.remote ())
+    repo, Store.remote ~resolvers (Key_gen.remote ())
 
   let pull_store repo upstream =
     Logs.info (fun m -> m "pulling from remote!");
@@ -206,8 +210,49 @@ module Main (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MC
 
   module D = Dns_server_mirage.Make(P)(M)(T)(S)
 
-  let start _rng _pclock _mclock _time s resolver conduit =
-    connect_store resolver conduit >>= fun (store, upstream) ->
+  let git_edn edn =
+    match Smart_git.endpoint_of_string edn with
+    | Ok edn -> edn
+    | Error (`Msg err) -> Fmt.invalid_arg "Invalid Git endpoint (%s): %s." edn err
+
+  let ssh_cfg edn =
+    match edn, Key_gen.ssh_seed (), Key_gen.ssh_auth () with
+    | { Smart_git.scheme= `SSH user; path; _ }, Some seed, Some auth ->
+      let authenticator = match Awa.Keys.authenticator_of_string auth with
+        | Ok v -> Some v
+        | Error err -> None in
+      let seed = Awa.Keys.of_seed seed in
+      let req = Awa.Ssh.Exec (Fmt.strf "git-upload-pack '%s'" path) in
+      Some { Awa_conduit.user; key= seed; req
+           ; authenticator }
+    | _ -> None
+
+  let start _rng _pclock _mclock _time s =
+    let tcp_resolver ~port domain_name =
+      match Domain_name.to_string domain_name, Key_gen.ipv4_gateway () with
+      | "gateway", Some gateway ->
+        Lwt.return_some
+          { Conduit_mirage_tcp.stack= s
+          ; Conduit_mirage_tcp.keepalive= None
+          ; Conduit_mirage_tcp.nodelay= false
+          ; Conduit_mirage_tcp.ip= gateway
+          ; Conduit_mirage_tcp.port }
+      | _ -> Lwt.return_none in
+    let ssh_cfg = ssh_cfg (git_edn (Key_gen.remote ())) in
+    let irmin_resolvers = match ssh_cfg with
+      | Some ssh_cfg ->
+        let ssh_resolver domain_name =
+          tcp_resolver ~port:22 domain_name >>= function
+          | Some edn -> Lwt.return_some (edn, ssh_cfg)
+          | None -> Lwt.return_none in
+        Conduit_mirage.empty
+        |> Conduit_mirage.add ~priority:10 ssh_protocol ssh_resolver
+        |> Conduit_mirage.add TCP.protocol (tcp_resolver ~port:9418)
+      | None ->
+        Conduit_mirage.add
+          TCP.protocol (tcp_resolver ~port:9418)
+          Conduit_mirage.empty in
+    connect_store ~resolvers:irmin_resolvers >>= fun (store, upstream) ->
     Logs.info (fun m -> m "i have now master!");
     load_git None store upstream >>= function
     | Error (`Msg msg) ->

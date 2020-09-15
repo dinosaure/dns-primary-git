@@ -10,6 +10,14 @@ let axfr =
   let doc = Key.Arg.info ~doc:"Allow unauthenticated zone transfer." ["axfr"] in
   Key.(create "axfr" Arg.(flag doc))
 
+let ssh_seed =
+  let doc = Key.Arg.info ~doc:"Seed of the private SSH key" [ "ssh-seed" ] in
+  Key.(create "ssh-seed" Arg.(opt (some string) None doc))
+
+let ssh_auth =
+  let doc = Key.Arg.info ~doc:"SSH Public key of the remote Git endpoint" [ "ssh-auth" ] in
+  Key.(create "ssh-auth" Arg.(opt (some string) None doc))
+
 let dns_handler =
   let packages = [
     package "logs" ;
@@ -17,16 +25,20 @@ let dns_handler =
     package "dns-tsig";
     package ~min:"2.0.0" "irmin-mirage";
     package ~min:"2.0.0" "irmin-mirage-git";
-    package "conduit-mirage";
+    package ~min:"3.0.0" ~sublibs:[ "tcp" ] "conduit-mirage";
+    package "awa-conduit";
   ] in
   foreign
-    ~keys:[Key.abstract remote_k ; Key.abstract axfr]
+    ~keys:[ Key.abstract remote_k
+          ; Key.abstract axfr
+          ; Key.abstract ssh_seed
+          ; Key.abstract ssh_auth ]
     ~packages
     "Unikernel.Main"
-    (random @-> pclock @-> mclock @-> time @-> stackv4 @-> resolver @-> conduit @-> job)
+    (random @-> pclock @-> mclock @-> time @-> stackv4 @-> job)
 
 let () =
   let net = generic_stackv4 default_network in
   register "primary-git"
     [dns_handler $ default_random $ default_posix_clock $ default_monotonic_clock $
-     default_time $ net $ resolver_dns net $ conduit_direct ~tls:true net]
+     default_time $ net ]
