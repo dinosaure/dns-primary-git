@@ -4,23 +4,6 @@ type mimic = Mimic
 
 let mimic = typ Mimic
 
-let mimic_conf () =
-  let packages = [ package "mimic" ] in
-  impl @@ object
-       inherit base_configurable
-       method ty = mimic @-> mimic @-> mimic
-       method module_name = "Mimic.Merge"
-       method! packages = Key.pure packages
-       method name = "ctx"
-       method! connect _ _modname =
-         function
-         | [ a; b ] -> Fmt.str "Lwt.return (Mimic.merge %s %s)" a b
-         | [ x ] -> Fmt.str "%s.ctx" x
-         | _ -> Fmt.str "Lwt.return Mimic.empty"
-     end
-
-let merge ctx0 ctx1 = mimic_conf () $ ctx0 $ ctx1
-
 let mimic_tcp_conf ~edn () =
   let packages = [ package "git-mirage" ~sublibs:[ "tcp" ] ] in
   let edn = Key.abstract edn in
