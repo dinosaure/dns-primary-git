@@ -4,6 +4,23 @@ type mimic = Mimic
 
 let mimic = typ Mimic
 
+let mimic_conf () =
+  let packages = [ package "mimic" ] in
+  impl @@ object
+       inherit base_configurable
+       method ty = mimic @-> mimic @-> mimic
+       method module_name = "Mimic.Merge"
+       method! packages = Key.pure packages
+       method name = "merge_ctx"
+       method! connect _ _modname =
+         function
+         | [ a; b ] -> Fmt.str "Lwt.return (Mimic.merge %s %s)" a b
+         | [ x ] -> Fmt.str "%s.ctx" x
+         | _ -> Fmt.str "Lwt.return Mimic.empty"
+     end
+
+let merge ctx0 ctx1 = mimic_conf () $ ctx0 $ ctx1
+
 let mimic_tcp_conf ~edn () =
   let packages = [ package "git-mirage" ~sublibs:[ "tcp" ] ] in
   let edn = Key.abstract edn in
@@ -26,7 +43,7 @@ let mimic_tcp_conf ~edn () =
 
 let mimic_tcp_impl ~edn stackv4 = mimic_tcp_conf ~edn () $ stackv4
 
-let mimic_git_conf ~edn ~cap () =
+let mimic_git_conf ~edn () =
   let packages = [ package "git-mirage" ] in
   let edn = Key.abstract edn in
   impl @@ object
@@ -35,25 +52,20 @@ let mimic_git_conf ~edn ~cap () =
        method! keys = [ edn ]
        method module_name = "Git_mirage.Make"
        method! packages = Key.pure packages
-       method name = match cap with
-         | `Rd -> "git_ctx_rd"
-         | `Wr -> "git_ctx_wr"
-       method! connect _ modname _ =
-         let capability = match cap with
-           | `Rd -> "fetch"
-           | `Wr -> "push" in
-         Fmt.str
-           {|let git_ctx0 = %s.%s %s.ctx in
-             let git_ctx1 = %s.with_smart_git_endpoint (%a) git_ctx0 in
-             let git_ctx2 = %s.with_resolv git_ctx1 in
-             Lwt.return git_ctx2|}
-           modname capability modname
-           modname Key.serialize_call edn
-           modname
+       method name = "git_ctx"
+       method! connect _ modname = function
+         | [ _stackv4; ctx; ] ->
+           Fmt.str
+             {|let git_ctx1 = %s.with_smart_git_endpoint (%a) %s in
+               let git_ctx2 = %s.with_resolv git_ctx1 in
+               Lwt.return git_ctx2|}
+             modname Key.serialize_call edn ctx
+             modname
+         | _ -> assert false
      end
 
-let mimic_git_impl ~edn ~cap stackv4 mimic_tcp =
-  mimic_git_conf ~edn ~cap () $ stackv4 $ mimic_tcp
+let mimic_git_impl ~edn stackv4 mimic_tcp =
+  mimic_git_conf ~edn () $ stackv4 $ mimic_tcp
 
 let mimic_ssh_conf ~edn ~kind ~seed ~auth () =
   let seed = Key.abstract seed in
@@ -84,7 +96,7 @@ let mimic_ssh_conf ~edn ~kind ~seed ~auth () =
                tcp_ctx git_ctx modname with_key Key.serialize_call seed modname
                Key.serialize_call auth modname modname modname
                Key.serialize_call edn
-         | _ -> Fmt.str "Lwt.return %s.ctx" modname
+         | _ -> assert false
      end
 
 let mimic_ssh_impl ~edn ~kind ~seed ~auth stackv4 mimic_tcp mimic_git mclock =
@@ -93,6 +105,33 @@ let mimic_ssh_impl ~edn ~kind ~seed ~auth stackv4 mimic_tcp mimic_git mclock =
   $ mimic_tcp
   $ mimic_git
   $ mclock
+
+let mimic_dns_conf ~edn () =
+  let packages = [ package "git-mirage" ~sublibs:[ "dns" ] ] in
+  let edn = Key.abstract edn in
+  impl @@ object
+       inherit base_configurable
+       method ty = random @-> mclock @-> time @-> stackv4 @-> mimic @-> mimic
+       method! keys = [ edn ]
+       method module_name = "Git_mirage_dns.Make"
+       method! packages = Key.pure packages
+       method name = "dns_ctx"
+       method! connect _ modname =
+         function
+         | [ _; _; _; _; ctx ] ->
+             Fmt.str
+               "Lwt.return (%s.with_resolv (%s.with_smart_git_endpoint %a %s))"
+               modname modname Key.serialize_call edn ctx
+         | _ -> assert false
+     end
+
+let mimic_dns_impl ~edn random mclock time stackv4 mimic_tcp =
+  mimic_dns_conf ~edn ()
+  $ random
+  $ mclock
+  $ time
+  $ stackv4
+  $ mimic_tcp
 
 (* / *)
 
@@ -112,6 +151,10 @@ let ssh_auth =
   let doc = Key.Arg.info ~doc:"SSH public key of the remote Git endpoint." [ "ssh-auth" ] in
   Key.(create "ssh_auth" Arg.(opt (some string) None doc))
 
+let with_dns_resolver =
+  let doc = Key.Arg.info ~doc:"Use a DNS resolver for HTTPS Git remote endpoint." [ "with-dns-resolver" ] in
+  Key.(create "with_dns_resolver" Arg.(flag ~stage:`Configure doc))
+
 let dns_handler =
   let packages = [
     package "logs" ;
@@ -123,15 +166,18 @@ let dns_handler =
     package "conduit-mirage";
   ] in
   foreign
-    ~keys:[Key.abstract remote_k ; Key.abstract axfr]
+    ~keys:[Key.abstract remote_k ; Key.abstract axfr; Key.abstract with_dns_resolver]
     ~packages
     "Unikernel.Main"
-    (random @-> pclock @-> mclock @-> time @-> stackv4 @-> mimic @-> mimic @-> job)
+    (random @-> pclock @-> mclock @-> time @-> stackv4 @-> mimic @-> job)
 
-let mimic ~edn ~cap ~kind ~seed ~auth stackv4 mclock =
+let mimic ~edn ~kind ~seed ~auth random time stackv4 mclock () =
   let mtcp = mimic_tcp_impl ~edn stackv4 in
-  let mgit = mimic_git_impl ~edn ~cap stackv4 mtcp in
-  mimic_ssh_impl ~edn ~kind ~seed ~auth stackv4 mtcp mgit mclock
+  let mgit = mimic_git_impl ~edn stackv4 mtcp in
+  let mssh = mimic_ssh_impl ~edn ~kind ~seed ~auth stackv4 mtcp mgit mclock in
+  (* if_impl Key.(value with_dns_resolver)
+    (merge (mimic_dns_impl ~edn random mclock time stackv4 mtcp) mssh) *)
+    mssh
 
 let () =
   let net = generic_stackv4 default_network in
@@ -139,7 +185,6 @@ let () =
   let pclock = default_posix_clock in
   let mclock = default_monotonic_clock in
   let time = default_time in
+  let mimic = mimic ~edn:remote_k ~kind:`Rsa ~seed:ssh_seed ~auth:ssh_auth random time net mclock in
   register "primary-git"
-    [ dns_handler $ random $ pclock $ mclock $ time $ net $
-      mimic ~edn:remote_k ~cap:`Rd ~kind:`Rsa ~seed:ssh_seed ~auth:ssh_auth net mclock $
-      mimic ~edn:remote_k ~cap:`Wr ~kind:`Rsa ~seed:ssh_seed ~auth:ssh_auth net mclock ]
+    [ dns_handler $ random $ pclock $ mclock $ time $ net $ mimic () ]

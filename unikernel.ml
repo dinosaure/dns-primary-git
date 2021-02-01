@@ -4,7 +4,7 @@
 
 open Lwt.Infix
 
-module Main (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Mirage_stack.V4) (_ : sig end) (_ : sig end) = struct
+module Main (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MCLOCK) (T : Mirage_time.S) (S : Mirage_stack.V4) (_ : sig end)  = struct
 
   module Store = Irmin_mirage_git.Mem.KV(Irmin.Contents.String)
   module Sync = Irmin.Sync(Store)
@@ -206,8 +206,8 @@ module Main (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MC
 
   module D = Dns_server_mirage.Make(P)(M)(T)(S)
 
-  let start _rng _pclock _mclock _time s rd_ctx wr_ctx =
-    connect_store rd_ctx >>= fun (store, upstream) ->
+  let start _rng _pclock _mclock _time s ctx =
+    connect_store ctx >>= fun (store, upstream) ->
     Logs.info (fun m -> m "i have now master!");
     load_git None store upstream >>= function
     | Error (`Msg msg) ->
@@ -215,7 +215,7 @@ module Main (R : Mirage_random.S) (P : Mirage_clock.PCLOCK) (M : Mirage_clock.MC
       Lwt.return_unit
     | Ok (trie, keys) ->
       let on_update ~old ~authenticated_key ~update_source t =
-        store_zones ~old authenticated_key update_source t store (Store.remote ~ctx:wr_ctx (Key_gen.remote ()))
+        store_zones ~old authenticated_key update_source t store upstream
       and on_notify n t =
         match n with
         | `Notify soa ->
