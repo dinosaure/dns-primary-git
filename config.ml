@@ -118,7 +118,7 @@ let ssh_auth =
 
 let with_dns_resolver =
   let doc = Key.Arg.info ~doc:"Use a DNS resolver for HTTPS Git remote endpoint." [ "with-dns-resolver" ] in
-  let key = Key.Arg.opt ~stage:`Run Key.Arg.bool false doc in
+  let key = Key.Arg.flag ~stage:`Configure doc in
   Key.(create "with_dns_resolver" key)
 
 let dns_handler =
@@ -132,7 +132,7 @@ let dns_handler =
     package "conduit-mirage";
   ] in
   foreign
-    ~keys:[Key.v remote_k ; Key.v axfr]
+    ~keys:[Key.v remote_k ; Key.v axfr; Key.v with_dns_resolver ]
     ~packages
     "Unikernel.Main"
     (random @-> pclock @-> mclock @-> time @-> stackv4 @-> mimic @-> job)
@@ -152,6 +152,6 @@ let () =
   let pclock = default_posix_clock in
   let mclock = default_monotonic_clock in
   let time = default_time in
-  register "primary-git" ~keys:[ Key.v with_dns_resolver ]
+  register "primary-git"
     [ dns_handler $ random $ pclock $ mclock $ time $ net
     $ mimic ~edn:remote_k ~kind:`Rsa ~seed:ssh_seed ~auth:ssh_auth random time net mclock ]
